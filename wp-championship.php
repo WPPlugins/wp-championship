@@ -1,0 +1,209 @@
+<?php
+/*
+Plugin Name: wp-championship
+Plugin URI: http://www.tuxlog.de/wp-championship
+Description: wp-championship is a plugin for wordpress letting you play a guessing game of a tournament e.g. soccer.
+Version: 7.1
+Author: tuxlog 
+Author URI: http://www.tuxlog.de
+*/
+
+/*  Copyright 2007-2015  Hans Matzen  (email : webmaster at tuxlog dot de)
+
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program; if not, write to the Free Software
+    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+*/
+
+// globale konstanten einlesen / Parameter
+include ("globals.php");
+// include setup functions
+require_once("setup.php");
+
+// admin dialog
+require_once("cs_admin.php");
+require_once("cs_admin_team.php");
+require_once("cs_admin_match.php");
+require_once("cs_admin_finals.php");
+require_once("cs_admin_users.php");
+require_once("cs_admin_stats.php");
+require_once("cs_admin_labels.php");
+require_once("cs_admin_tippgroup.php");
+require_once("cs_admin_export.php");
+require_once("cs_admin_import.php");
+require_once("cs_usertipp.php");
+require_once("cs_userstats.php");
+require_once("cs_stats.php");
+// use customized groupstats if available
+if (file_exists(  get_stylesheet_directory() . '/wp-championship/cs_groupstats.php' )){
+	require_once(get_stylesheet_directory_uri() . "/wp-championship/cs_groupstats.php");
+} else {
+	require_once("cs_groupstats.php");
+}
+// use customized matchstats if available
+if (file_exists(  get_stylesheet_directory() . '/wp-championship/cs_matchstats.php' )){
+	require_once(get_stylesheet_directory_uri() . "/wp-championship/cs_matchstats.php");
+} else {
+	require_once("cs_matchstats.php");
+}
+require_once("wpc_autoupdate.php");
+require_once("class_cs_widget.php");
+require_once("class_cs_widget_tippgroup.php");
+// xmlrpc extension laden wenn diese aktiviert ist
+if (get_option("cs_xmlrpc") > 0)
+	require_once("cs_xmlrpc.php");
+
+// set this to the demo user id to enable demo mode, everything can be read without being logged in
+// or to 0 or false to disable demo mode
+static $wpcs_demo=0;
+	
+// activating deactivating the plugin
+register_activation_hook(__FILE__,'wp_championship_install');
+
+// aktion fuer erinnerungsmails hinzufügen
+add_action('cs_mailreminder', 'cs_mailservice2');
+
+// uncomment this to loose everything when deactivating the plugin
+register_deactivation_hook(__FILE__,'wp_championship_deinstall');
+
+// add option page 
+add_action('admin_menu', 'add_menus');
+
+// init plugin
+add_action('init', 'wp_championship_init');
+	
+// register widget classes
+add_action('widgets_init', create_function('', 'return register_widget("cs_widget");')); 
+add_action('widgets_init', create_function('', 'return register_widget("cs_widget_tippgroup");')); 
+
+if (get_option("cs_newuser_auto")==1) {
+	add_action('user_register','cs_add_user');
+}
+
+// add triggers for ajax/thickbox call for export and import
+if (is_admin()) {
+		add_action('wp_ajax_wpc_export', "wpc_export_cb");
+		add_action('wp_ajax_wpc_import', "wpc_import_cb");
+}
+	
+//
+// just return the css link
+// this function is called via the wp_head hook
+//
+function wpcs_css() 
+{
+    $plugin_url = plugins_url( '/' , __FILE__ );
+    $def  = "wp-championship-default.css";
+    $user = "wp-championship.css";
+    
+    if (file_exists( plugin_dir_path( __FILE__ ) . $user))
+	    $def =$user;
+
+    if (file_exists(  get_stylesheet_directory() . '/wp-championship/wp-championship.css' ))
+    {
+        $plugin_url = get_stylesheet_directory_uri() . '/wp-championship/';
+    }
+    
+    echo '<link rel="stylesheet" id="wp-championship-css" href="'. 
+	$plugin_url . $def . '" type="text/css" media="screen" />' ."\n";
+    
+}
+
+// add css im header hinzufügen 
+add_action('wp_head', 'wpcs_css');
+add_action('admin_head', 'wpcs_css');
+
+
+function wp_championship_init()
+{
+  // get translation 
+  load_plugin_textdomain('wpcs',false,dirname( plugin_basename( __FILE__ ) ) . "/lang/");
+    
+  if (function_exists('add_shortcode')) {
+  	add_shortcode('cs-usertipp', 'show_UserTippForm');
+	add_shortcode('cs-userstats','show_UserStats');
+  	add_shortcode('cs-stats1',   'show_Stats1');
+  	add_shortcode('cs-stats2',   'show_Stats2');
+  	add_shortcode('cs-stats3',   'show_Stats3');
+  	add_shortcode('cs-stats4',   'show_Stats4');
+  	add_shortcode('cs-stats5',   'show_Stats5');
+  	add_shortcode('cs-stats6',   'show_Stats6');
+  	add_shortcode('cs-stats7',   'show_Stats7');
+  	add_shortcode('cs-stats8',   'show_Stats8');
+  }
+
+  // javascript hinzufügen für tablesorter / floating menu und statistik ajaxeffekt
+  if ( ! is_admin()) {
+	wp_enqueue_script('cs_tablesort', plugins_url('jquery.tablesorter.min.js', __FILE__),
+		      array('jquery'), "2.0.3",true);
+    
+	if (file_exists(  get_stylesheet_directory() . '/wp-championship/cs_stats.js' )){
+		wp_enqueue_script('cs_stats', get_stylesheet_directory_uri() . '/wp-championship/cs_stats.js', array('jquery'), "9999"); 
+    } else {
+		wp_enqueue_script('cs_stats', plugins_url('cs_stats.js', __FILE__), array('jquery'), "9999"); 
+    }
+    $pdu = array( 'wpc_ajaxurl' => admin_url('admin-ajax.php'));
+	wp_localize_script( 'cs_stats', 'wpcobj', $pdu );
+	
+    wp_enqueue_script('cs_hovertable', plugins_url('jquery.tooltip.js', __FILE__),
+		      array('jquery'), "9999");
+  } 
+}
+
+function wpcs_add_adminjs()
+{
+	// javascript hinzufügen für tablesorter / floating menu und statistik ajaxeffekt
+	wp_enqueue_script('cs_admin', plugins_url('cs_admin.js', __FILE__),	array(), "9999");
+	
+	wp_enqueue_script('jquery');
+	wp_enqueue_script('jquery-ui-core');
+	wp_enqueue_script('jquery-ui-tabs');
+	wp_enqueue_script( 'thickbox' );
+	wp_enqueue_style ( 'thickbox' );
+}
+
+// adds the admin menustructure
+function add_menus() {
+
+  $PPATH = plugin_dir_path( __FILE__ );
+
+  $jspage = add_menu_page('wp-champion',__('Tippspiel',"wpcs"), 'manage_options', $PPATH."cs_admin.php","cs_admin",	plugin_dir_url( __FILE__ ) . '/worldcup-icon.png');
+  add_action('admin_print_styles-' . $jspage, 'wpcs_add_adminjs');
+
+  add_submenu_page( $PPATH."cs_admin.php", __('wp-championship Teams',"wpcs"), __('Mannschaften', "wpcs"), 'manage_options', $PPATH."cs_admin_team.php", "cs_admin_team") ;
+  add_action('admin_print_styles-' . $jspage, 'wpcs_add_adminjs');
+  
+  add_submenu_page( $PPATH."cs_admin.php", __('wp-championship Matches',"wpcs"), __('Vorrunde', "wpcs"), 'manage_options', $PPATH."cs_admin_match.php", "cs_admin_match") ; 
+ 
+  add_submenu_page( $PPATH."cs_admin.php", __('wp-championship Finals',"wpcs"), __('Finalrunde', "wpcs"), 'manage_options', $PPATH."cs_admin_finals.php", "cs_admin_finals") ; 
+
+  add_submenu_page( $PPATH."cs_admin.php", __('wp-championship Users',"wpcs"), __('Mitspieler', "wpcs"), 'manage_options', $PPATH."cs_admin_users.php", "cs_admin_users") ; 
+
+  add_submenu_page( $PPATH."cs_admin.php", __('wp-championship Stats',"wpcs"), __('Statistiken', "wpcs"), 'manage_options', $PPATH."cs_admin_stats.php", "cs_admin_stats") ;
+
+  $jspage = add_submenu_page( $PPATH."cs_admin.php", __('wp-championship Bezeichungen',"wpcs"), __('Bezeichnungen', "wpcs"), 'manage_options', $PPATH."cs_admin_labels.php", "cs_admin_labels") ;
+  add_action('admin_print_styles-' . $jspage, 'wpcs_add_adminjs');
+  
+  if (get_option("cs_use_tippgroup"))
+	add_submenu_page( $PPATH."cs_admin.php", __('wp-championship Tippgruppen',"wpcs"), __('Tippgruppen', "wpcs"), 'manage_options', $PPATH."cs_admin_tippgroup.php", "cs_admin_tippgroup") ;
+	
+  add_users_page(__('Tippspiel','wpcs'), __('Tippspiel','wpcs'), 'read', 'wpcs-usertipp', 'backend_show_UserTippForm');
+  
+ }
+ 
+ // just get the usertipp dialog and print it for use in backend
+ function backend_show_UserTippForm() {
+	 $erg = show_userTippForm();
+	 echo $erg;
+ }
+?>
